@@ -432,14 +432,14 @@
     },
     {
       "parameters": {
-        "jsCode": "const payloads = $input.all();\nconst jobs = $('Flatten Term List').all();\n\nreturn payloads.map((inputItem, index) => {\n  const payload = inputItem.json;\n  const job = jobs[index].json;\n\n  const system_prompt = `You are a professional multilingual WordPress taxonomy translator.\\nTranslate the provided JSON from ${payload.source_lang} to ${job.target_lang}.\\nRules:\\n1. Translate name and description naturally.\\n2. For 'slug': produce a URL-friendly lowercase hyphenated version.\\n3. Translate all meta text values.\\n4. Return ONLY the translated JSON — no markdown, no explanation.`;\n\n  const to_translate = {\n    core: payload.translatable,\n    meta: {}\n  };\n\n  for (const [key, info] of Object.entries(payload.meta || {})) {\n    if (info.translatable && info.raw_value) {\n      to_translate.meta[key] = String(info.raw_value);\n    }\n  }\n\n  return { \n    json: {\n      ...job,\n      term_payload: payload,\n      deepseek_request: {\n        model: job.deepseek_model,\n        max_tokens: 2048,\n        temperature: 0.2,\n        messages: [\n          { role: 'system', content: system_prompt },\n          { role: 'user',   content: `Translate this JSON from ${payload.source_lang} to ${job.target_lang}:\\n${JSON.stringify(to_translate, null, 2)}` }\n        ]\n      }\n    }\n  };\n});"
+        "jsCode": "return $input.all().map(inputItem => {\n  const d = inputItem.json;  // fully merged item from Merge Term Payload\n\n  const system_prompt = `You are a professional multilingual WordPress taxonomy translator.\nTranslate the provided JSON from ${d.source_lang} to ${d.target_lang}.\nRules:\n1. Translate name and description naturally.\n2. For 'slug': produce a URL-friendly lowercase hyphenated version.\n3. Translate all meta text values.\n4. Return ONLY the translated JSON — no markdown, no explanation.`;\n\n  const to_translate = { core: d.term_payload.translatable, meta: {} };\n\n  for (const [key, info] of Object.entries(d.term_payload.meta || {})) {\n    if (info.translatable && info.raw_value) {\n      to_translate.meta[key] = String(info.raw_value);\n    }\n  }\n\n  return {\n    json: {\n      // Carry all job context forward so Merge DS Term Response can re-attach it\n      term_id:         d.term_id,\n      taxonomy:        d.taxonomy,\n      source_lang:     d.source_lang,\n      target_lang:     d.target_lang,\n      wp_base_url:     d.wp_base_url,\n      deepseek_api_url: d.deepseek_api_url,\n      deepseek_model:  d.deepseek_model,\n      term_payload:    d.term_payload,\n      deepseek_request: {\n        model:       d.deepseek_model,\n        max_tokens:  2048,\n        temperature: 0.2,\n        messages: [\n          { role: 'system', content: system_prompt },\n          { role: 'user',   content: `Translate this JSON from ${d.source_lang} to ${d.target_lang}:\\n${JSON.stringify(to_translate, null, 2)}` }\n        ]\n      }\n    }\n  };\n});"
       },
       "id": "9c96f80e-f840-408b-a7e2-6fe39740989d",
       "name": "Prepare Term DeepSeek Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1152,
+        1376,
         272
       ]
     },
@@ -461,7 +461,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1376,
+        1600,
         272
       ],
       "credentials": {
@@ -473,14 +473,14 @@
     },
     {
       "parameters": {
-        "jsCode": "const responses = $input.all();\nconst reqItems = $('Prepare Term DeepSeek Request').all();\n\nreturn responses.map((inputItem, index) => {\n  const deepseek_resp = inputItem.json;\n  const item = reqItems[index].json;\n\n  if (!deepseek_resp.choices || deepseek_resp.choices.length === 0) {\n    throw new Error('DeepSeek returned no choices for term ' + item.term_payload.term_id);\n  }\n\n  let raw = deepseek_resp.choices[0].message.content.trim();\n  raw = raw.replace(/^```json\\s*/i, '').replace(/\\s*```$/i, '');\n\n  let translated;\n  try {\n    translated = JSON.parse(raw);\n  } catch(e) {\n    throw new Error('Failed to parse DeepSeek JSON for term ' + item.term_payload.term_id);\n  }\n\n  return { \n    json: {\n      wp_base_url: item.wp_base_url,\n      save_payload: {\n        source_id:   item.term_payload.term_id,\n        taxonomy:    item.term_payload.taxonomy,\n        target_lang: item.target_lang,\n        translated: {\n          name:        translated.core?.name        || item.term_payload.translatable.name,\n          description: translated.core?.description || item.term_payload.translatable.description,\n          slug:        translated.core?.slug        || item.term_payload.translatable.slug + '-' + item.target_lang,\n        },\n        meta: translated.meta || {}\n      }\n    }\n  };\n});"
+        "jsCode": "return $input.all().map((inputItem, index) => {\n  const d = inputItem.json;  // merged item: DeepSeek response + job context\n\n  if (!d.choices || d.choices.length === 0) {\n    throw new Error(`DeepSeek returned no choices for term_id=${d.term_id} lang=${d.target_lang}`);\n  }\n\n  let raw = d.choices[0].message.content.trim();\n  raw = raw.replace(/^```json\\s*/i, '').replace(/\\s*```$/i, '');\n\n  let translated;\n  try {\n    translated = JSON.parse(raw);\n  } catch(e) {\n    throw new Error(`Failed to parse DeepSeek JSON for term_id=${d.term_id} lang=${d.target_lang}: ${e.message}`);\n  }\n\n  return {\n    json: {\n      wp_base_url: d.wp_base_url,\n      save_payload: {\n        source_id:   d.term_id,\n        taxonomy:    d.taxonomy,\n        target_lang: d.target_lang,\n        translated: {\n          name:        translated.core?.name        || d.fallback_name,\n          description: translated.core?.description || d.fallback_description,\n          slug:        translated.core?.slug        || (d.fallback_slug + '-' + d.target_lang),\n        },\n        meta: translated.meta || {}\n      }\n    }\n  };\n});"
       },
       "id": "07f91b20-2e33-4e63-b0ed-9bcf9481056a",
       "name": "Parse Term DeepSeek Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1600,
+        1824,
         272
       ]
     },
@@ -500,7 +500,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1808,
+        2032,
         272
       ],
       "credentials": {
@@ -519,7 +519,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2032,
+        2256,
         272
       ]
     },
@@ -532,7 +532,7 @@
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        2256,
+        2480,
         272
       ],
       "webhookId": "9e4ec53c-e2ab-46bd-993a-9893b045d198"
@@ -561,6 +561,32 @@
           "id": "trLV20j5f45w9tZb",
           "name": "Unnamed credential"
         }
+      }
+    },
+    {
+      "id": "bb001122-ccdd-eeff-0011-223344556677",
+      "name": "Merge Term Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        272
+      ],
+      "parameters": {
+        "jsCode": "// Merge the GET Term Payload HTTP response with job context from Flatten Term List.\n// HTTP nodes replace the item entirely, so we re-attach job fields here by index.\nconst payloads  = $input.all();\nconst jobItems  = $('Flatten Term List').all();\n\nreturn payloads.map((inputItem, index) => {\n  const payload = inputItem.json;          // raw HTTP response from GET Term Payload\n  const job     = jobItems[index].json;    // matching job from Flatten Term List\n\n  return {\n    json: {\n      term_payload:      payload,           // full payload from PHP endpoint\n      term_id:           job.term_id,\n      taxonomy:          job.taxonomy,\n      source_lang:       job.source_lang,\n      target_lang:       job.target_lang,\n      wp_base_url:       job.wp_base_url,\n      deepseek_api_url:  job.deepseek_api_url,\n      deepseek_model:    job.deepseek_model,\n    }\n  };\n});"
+      }
+    },
+    {
+      "id": "aabb2233-ccdd-eeff-4455-667788990011",
+      "name": "Merge DS Term Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        272
+      ],
+      "parameters": {
+        "jsCode": "// Merge the DeepSeek HTTP response with job context from Prepare Term DeepSeek Request.\n// HTTP nodes replace the item entirely, so we re-attach job fields here by index.\nconst dsResponses = $input.all();\nconst reqItems    = $('Prepare Term DeepSeek Request').all();\n\nreturn dsResponses.map((inputItem, index) => {\n  const ds_resp = inputItem.json;        // raw DeepSeek API response\n  const req     = reqItems[index].json;  // matching prepared request item\n\n  return {\n    json: {\n      // DeepSeek response fields\n      choices:         ds_resp.choices,\n      // Job context carried forward\n      term_id:         req.term_id,\n      taxonomy:        req.taxonomy,\n      source_lang:     req.source_lang,\n      target_lang:     req.target_lang,\n      wp_base_url:     req.wp_base_url,\n      deepseek_model:  req.deepseek_model,\n      // Fallback values in case translation fails\n      fallback_name:        req.term_payload?.translatable?.name        || '',\n      fallback_description: req.term_payload?.translatable?.description || '',\n      fallback_slug:        req.term_payload?.translatable?.slug        || '',\n    }\n  };\n});"
       }
     }
   ],
@@ -757,7 +783,7 @@
       "main": [
         [
           {
-            "node": "Prepare Term DeepSeek Request",
+            "node": "Merge Term Payload",
             "type": "main",
             "index": 0
           }
@@ -779,7 +805,7 @@
       "main": [
         [
           {
-            "node": "Parse Term DeepSeek Response",
+            "node": "Merge DS Term Response",
             "type": "main",
             "index": 0
           }
@@ -824,6 +850,28 @@
         [
           {
             "node": "Build Taxonomy + Lang Jobs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Term Payload": {
+      "main": [
+        [
+          {
+            "node": "Prepare Term DeepSeek Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge DS Term Response": {
+      "main": [
+        [
+          {
+            "node": "Parse Term DeepSeek Response",
             "type": "main",
             "index": 0
           }
